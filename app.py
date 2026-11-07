@@ -13,77 +13,78 @@ st.set_page_config(
 )
 
 HEADERS = {
-    "User-Agent": "CommanderWebEvaluator/3.1",
+    "User-Agent": "CommanderWebEvaluator/3.2",
     "Accept": "application/json",
 }
 TOTAL_COMMANDER_CARDS = 28000.0
 
+# Recalibrated 10 Brackets with Heavy Combo Weighting
 BRACKETS = [
     (
         0,
-        99,
+        119,
         "Bracket 1",
         "🪑 Chair Tribal & Bulk Bin",
         "99 cards found under a couch cushion. Zero threat, pure vibes.",
     ),
     (
-        100,
-        199,
+        120,
+        249,
         "Bracket 2",
         "📦 Fresh Out of the Cardboard Box",
         "Untouched Precon level. Winning on Turn 14 via fair combat.",
     ),
     (
-        200,
-        319,
+        250,
+        449,
         "Bracket 3",
         "🍺 Kitchen Table Beer & Pretzels",
         "Upgraded Precon. You swapped 10 taplands and feel like a genius.",
     ),
     (
-        320,
-        449,
+        450,
+        699,
         "Bracket 4",
         "📈 EDHREC Top Synergy Enjoyer",
         "Cohesive engine deck. Fair Magic, but nobody ignores your board.",
     ),
     (
-        450,
-        599,
+        700,
+        999,
         "Bracket 5",
         "🤥 'I Swear My Deck Is a 7'",
         "LGS classic: real tutors, strong engines, and 'accidental' combos.",
     ),
     (
-        600,
-        749,
+        1000,
+        1349,
         "Bracket 6",
         "💸 'Do You Pay the 1?'",
-        "Tax collectors, free spells, fast mana. Friends sigh when they see it.",
+        "Tax collectors, free spells, fast mana, or a solid 2-card wincon.",
     ),
     (
-        750,
-        899,
+        1350,
+        1749,
         "Bracket 7",
         "🚨 Archenemy of the Pod",
         "High-Power machine. Requires a 3v1 alliance by Turn 4 to stop you.",
     ),
     (
-        900,
-        1099,
+        1750,
+        2199,
         "Bracket 8",
         "🧪 Degenerate Lab Maniac",
         "Fast mana, compact combos, ruthless interaction. Blink and it's over.",
     ),
     (
-        1100,
-        1349,
+        2200,
+        2699,
         "Bracket 9",
         "🖨️ Printer Ink Goes Brrrr (Fringe cEDH)",
         "Optimized with Reserved List bombs, Moxen, and Turn 3 win attempts.",
     ),
     (
-        1350,
+        2700,
         99999,
         "Bracket 10",
         "💀 Turn 1 Rhystic, Pass (Pure cEDH)",
@@ -335,6 +336,18 @@ def compute_base_score(card):
     return s_base
 
 
+def compute_combo_base_floor(card):
+    """When a cheap card (like Basalt Monolith) is in an ACTIVE combo,
+
+    we unlock its pure EDHREC popularity potential so its multiplier hits hard.
+    """
+    s_base = compute_base_score(card)
+    rank = card.get("edhrec_rank") or int(TOTAL_COMMANDER_CARDS)
+    i_pop = max(0.0, 1.0 - (math.log(rank) / math.log(TOTAL_COMMANDER_CARDS)))
+    pop_potential = 45.0 * (i_pop**2.0)
+    return max(s_base, pop_potential)
+
+
 # ==============================================================================
 # WEB INTERFACE
 # ==============================================================================
@@ -379,8 +392,9 @@ with col_input2:
         "**How the Math Works:**\n"
         "- **Base Score:** $(\\text{Price} / \\text{Rank})^{0.65}$\n"
         "- **1-Mana Fixing Lands:** 0 pts\n"
-        "- **Combo Multiplier:** Active ONLY if all pieces are in the deck.\n"
-        "- **Commander Weight:** Multiplied **x10**."
+        "- **Heavy Combo Weight:** High multiplier (`1 + 4.5 * eta`) unlocked "
+        "ONLY when all pieces of a combo are in the deck.\n"
+        "- **Commander Weight:** Multiplied **x10** (and **x2.0** on combos!)."
     )
     analyze_btn = st.button(
         "🚀 Analyze Deck & Calculate Score",
@@ -465,7 +479,7 @@ if analyze_btn and parsed_names:
         cz_dominance_bonus = 45.0 * (i_ci * i_glob)
         cmd_raw_score = cmd_base + cz_dominance_bonus
 
-        # 3. SCAN ACTIVE COMBOS
+        # 3. SCAN ACTIVE COMBOS (HEAVY WEIGHT)
         cmc_lookup = {c["name"]: c.get("cmc", 3.5) for c in cards_dict.values()}
         deck_set_lower = set(cards_dict.keys()) | {
             n.lower() for n in parsed_names
@@ -537,7 +551,8 @@ if analyze_btn and parsed_names:
                     or cn.lower() == cmd_front_l
                     for cn in c_names
                 )
-                effective_eta = eta * (1.5 if uses_cmd else 1.0)
+                # Double combo efficiency if it uses the Commander!
+                effective_eta = eta * (2.0 if uses_cmd else 1.0)
 
                 c_info = {
                     "cards": c_names,
@@ -560,7 +575,8 @@ if analyze_btn and parsed_names:
             cmd_harm = sum(
                 c["eta"] / (idx + 1) for idx, c in enumerate(cmd_combos)
             )
-            cmd_mult = 1.0 + (1.10 * cmd_harm)
+            # Heavy Combo Multiplier (4.5x coefficient)
+            cmd_mult = 1.0 + (4.50 * cmd_harm)
         else:
             cmd_mult = 1.0
 
@@ -583,12 +599,16 @@ if analyze_btn and parsed_names:
                 or []
             )
 
-            if c_combos and s_base > 0:
+            if c_combos and not is_resource_neutral_land(c_obj):
                 c_combos.sort(key=lambda x: x["eta"], reverse=True)
                 harm_eta = sum(
                     c["eta"] / (idx + 1) for idx, c in enumerate(c_combos)
                 )
-                m_combo = 1.0 + (1.10 * harm_eta)
+                # Heavy Combo Multiplier (4.5x coefficient)
+                m_combo = 1.0 + (4.50 * harm_eta)
+                effective_base = compute_combo_base_floor(c_obj)
+                card_score = round(effective_base * m_combo, 1)
+
                 best_c = c_combos[0]
                 c_cards = " + ".join(best_c["cards"])
                 combo_label = (
@@ -596,9 +616,9 @@ if analyze_btn and parsed_names:
                 )
             else:
                 m_combo = 1.0
+                card_score = round(s_base, 1)
                 combo_label = "-"
 
-            card_score = round(s_base * m_combo, 1)
             evaluated_rows.append(
                 {
                     "Card Name": c_obj["name"],
